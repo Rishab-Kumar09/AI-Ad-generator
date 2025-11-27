@@ -535,13 +535,22 @@ function segmentScriptAndMatchImages(files, script, imageAnalysis) {
 // Validation function to verify image-voiceover timing sync
 function validateTimingSync(files, script, imageAnalysis, durations) {
   console.log('\n🔍 === TIMING VALIDATION REPORT ===')
+  console.log('Received imageAnalysis:', imageAnalysis ? 'YES' : 'NO')
+  console.log('Received durations:', durations ? 'YES' : 'NO')
   
   // Parse imageAnalysis
   let analysis = {}
   try {
     analysis = typeof imageAnalysis === 'string' ? JSON.parse(imageAnalysis) : imageAnalysis
+    console.log('Parsed analysis entries:', Object.keys(analysis).length)
   } catch (e) {
-    console.log('⚠️ Cannot validate - no image analysis')
+    console.log('⚠️ Cannot validate - no image analysis data provided')
+    console.log('Error:', e.message)
+    return
+  }
+  
+  if (Object.keys(analysis).length === 0) {
+    console.log('⚠️ Cannot validate - analysis object is empty')
     return
   }
   
@@ -668,6 +677,14 @@ app.post('/api/generate-video', upload.array('images', 20), async (req, res) => 
     const { orderedFiles, durations } = segmentScriptAndMatchImages(req.files, script, imageAnalysis)
     req.files = orderedFiles
     const imageDurations = durations
+    
+    // Debug: Check what we're passing to validation
+    console.log('\n🔧 DEBUG: Calling validation with:')
+    console.log('   Files:', req.files.length)
+    console.log('   Script length:', script ? script.length : 0)
+    console.log('   ImageAnalysis type:', typeof imageAnalysis)
+    console.log('   ImageAnalysis present:', imageAnalysis ? 'YES' : 'NO')
+    console.log('   Durations:', imageDurations ? imageDurations.length : 0)
     
     // Validate timing sync and show detailed report
     validateTimingSync(req.files, script, imageAnalysis, imageDurations)

@@ -21,26 +21,83 @@ export default function UploadSection({ uploadedFiles, setUploadedFiles }) {
   useEffect(() => {
     const savedAnalysis = localStorage.getItem('imageAnalysis')
     const savedScript = localStorage.getItem('generatedScript')
+    const savedFiles = localStorage.getItem('uploadedFiles')
+    
     if (savedAnalysis) setImageAnalysis(JSON.parse(savedAnalysis))
     if (savedScript) setScript(savedScript)
+    
+    // Restore uploaded files with their categories
+    if (savedFiles) {
+      const filesData = JSON.parse(savedFiles)
+      const restoredFiles = filesData.map(fileData => ({
+        file: dataURLtoFile(fileData.dataURL, fileData.name),
+        preview: fileData.dataURL,
+        name: fileData.name,
+        category: fileData.category,
+        analysis: null
+      }))
+      setUploadedFiles(restoredFiles)
+      console.log('✅ Restored', restoredFiles.length, 'files from localStorage')
+    }
   }, [])
+  
+  // Helper function to convert data URL back to File
+  const dataURLtoFile = (dataurl, filename) => {
+    const arr = dataurl.split(',')
+    const mime = arr[0].match(/:(.*?);/)[1]
+    const bstr = atob(arr[1])
+    let n = bstr.length
+    const u8arr = new Uint8Array(n)
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n)
+    }
+    return new File([u8arr], filename, { type: mime })
+  }
 
-  const handleFileChange = (e) => {
+  const handleFileChange = async (e) => {
     const files = Array.from(e.target.files)
-    const fileData = files.map(file => ({
-      file,
-      preview: URL.createObjectURL(file),
-      name: file.name,
-      category: '', // Will be set by user
-      analysis: null
+    const fileDataPromises = files.map(async file => {
+      const dataURL = await fileToDataURL(file)
+      return {
+        file,
+        preview: dataURL,
+        name: file.name,
+        category: '', // Will be set by user
+        analysis: null
+      }
+    })
+    
+    const fileData = await Promise.all(fileDataPromises)
+    const newFiles = [...uploadedFiles, ...fileData]
+    setUploadedFiles(newFiles)
+    saveFilesToLocalStorage(newFiles)
+  }
+  
+  // Helper function to convert File to data URL
+  const fileToDataURL = (file) => {
+    return new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onloadend = () => resolve(reader.result)
+      reader.readAsDataURL(file)
+    })
+  }
+  
+  // Save files metadata to localStorage
+  const saveFilesToLocalStorage = (files) => {
+    const filesData = files.map(f => ({
+      name: f.name,
+      category: f.category,
+      dataURL: f.preview
     }))
-    setUploadedFiles([...uploadedFiles, ...fileData])
+    localStorage.setItem('uploadedFiles', JSON.stringify(filesData))
+    console.log('💾 Saved', files.length, 'files to localStorage')
   }
 
   const updateFileCategory = (index, category) => {
     const updated = [...uploadedFiles]
     updated[index].category = category
     setUploadedFiles(updated)
+    saveFilesToLocalStorage(updated)
   }
 
   const handleDrag = (e) => {
@@ -65,7 +122,9 @@ export default function UploadSection({ uploadedFiles, setUploadedFiles }) {
 
   const removeFile = (index) => {
     const fileName = uploadedFiles[index].name
-    setUploadedFiles(uploadedFiles.filter((_, i) => i !== index))
+    const newFiles = uploadedFiles.filter((_, i) => i !== index)
+    setUploadedFiles(newFiles)
+    saveFilesToLocalStorage(newFiles)
     
     // Remove from analysis
     const updated = { ...imageAnalysis }
@@ -211,6 +270,8 @@ export default function UploadSection({ uploadedFiles, setUploadedFiles }) {
       setScript('')
       localStorage.removeItem('imageAnalysis')
       localStorage.removeItem('generatedScript')
+      localStorage.removeItem('uploadedFiles')
+      console.log('🗑️ Cleared all data from localStorage')
     }
   }
 
