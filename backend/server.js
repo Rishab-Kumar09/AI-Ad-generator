@@ -510,37 +510,32 @@ function segmentScriptAndMatchImages(files, script, imageAnalysis) {
     console.log(`  ${i + 1}. ${seg.category}: chars ${seg.startPos}-${seg.endPos} (${seg.images.length} images)`)
   })
   
-  // Calculate timing for each segment (15 chars/second speech rate)
-  const totalDuration = Math.ceil(totalChars / 15)
-  const timings = []
+  // Calculate total voiceover duration (15 chars/second speech rate)
+  const CHARS_PER_SECOND = 15
+  const totalDuration = Math.ceil(totalChars / CHARS_PER_SECOND)
   
-  segments.forEach(seg => {
-    const segmentDuration = Math.max(3, Math.ceil(seg.charLength / 15)) // Min 3 seconds per segment
-    const durationPerImage = segmentDuration / seg.images.length
-    
-    seg.images.forEach(img => {
-      timings.push(durationPerImage)
-    })
-  })
-  
-  // Flatten ordered images
+  // SIMPLE APPROACH: Order images by when mentioned, spread evenly across entire duration
   const orderedFiles = segments.flatMap(seg => seg.images)
+  const durationPerImage = totalDuration / orderedFiles.length
+  const durations = orderedFiles.map(() => durationPerImage)
   
   console.log('\nTimed image display:')
   let cumTime = 0
   orderedFiles.forEach((file, i) => {
-    console.log(`  ${i + 1}. ${file.originalname.substring(0, 40)} - ${timings[i].toFixed(1)}s (at ${cumTime.toFixed(1)}s)`)
-    cumTime += timings[i]
+    console.log(`  ${i + 1}. ${file.originalname.substring(0, 40)} - ${durations[i].toFixed(1)}s (at ${cumTime.toFixed(1)}s)`)
+    cumTime += durations[i]
   })
+  console.log(`Total video duration: ${totalDuration.toFixed(1)}s (matches voiceover)`)
   
-  return { orderedFiles, durations: timings }
+  return { orderedFiles, durations, totalDuration }
 }
 
 // Validation function to verify image-voiceover timing sync
-function validateTimingSync(files, script, imageAnalysis, durations) {
+function validateTimingSync(files, script, imageAnalysis, durations, actualVoiceoverDuration) {
   console.log('\n🔍 === TIMING VALIDATION REPORT ===')
   console.log('Received imageAnalysis:', imageAnalysis ? 'YES' : 'NO')
   console.log('Received durations:', durations ? 'YES' : 'NO')
+  console.log('Actual voiceover duration:', actualVoiceoverDuration ? `${actualVoiceoverDuration.toFixed(1)}s` : 'UNKNOWN')
   
   // Parse imageAnalysis
   let analysis = {}
@@ -561,8 +556,9 @@ function validateTimingSync(files, script, imageAnalysis, durations) {
   const cleanedScript = cleanScript(script)
   const scriptLower = cleanedScript.toLowerCase()
   
-  // Speech rate: ~15 characters per second
-  const CHARS_PER_SECOND = 15
+  // Calculate speech rate from ACTUAL voiceover duration
+  const CHARS_PER_SECOND = actualVoiceoverDuration ? (cleanedScript.length / actualVoiceoverDuration) : 15
+  console.log(`Speech rate: ${CHARS_PER_SECOND.toFixed(1)} chars/second (based on actual audio)`)
   
   // Category keywords
   const categoryKeywords = {
@@ -678,9 +674,10 @@ app.post('/api/generate-video', upload.array('images', 20), async (req, res) => 
     console.log('Aspect Ratio:', aspectRatio || '16:9')
     
     // Segment script and match images with proper timing
-    const { orderedFiles, durations } = segmentScriptAndMatchImages(req.files, script, imageAnalysis)
+    const { orderedFiles, durations, totalDuration } = segmentScriptAndMatchImages(req.files, script, imageAnalysis)
     req.files = orderedFiles
     const imageDurations = durations
+    const voiceoverDuration = totalDuration || Math.ceil(cleanScript(script).length / 15)
     
     // Debug: Check what we're passing to validation
     console.log('\n🔧 DEBUG: Calling validation with:')
@@ -691,7 +688,7 @@ app.post('/api/generate-video', upload.array('images', 20), async (req, res) => 
     console.log('   Durations:', imageDurations ? imageDurations.length : 0)
     
     // Validate timing sync and show detailed report
-    validateTimingSync(req.files, script, imageAnalysis, imageDurations)
+    validateTimingSync(req.files, script, imageAnalysis, imageDurations, actualVoiceoverDuration)
     
     const outputDir = path.join(__dirname, 'output')
     if (!fs.existsSync(outputDir)) {
@@ -717,10 +714,30 @@ app.post('/api/generate-video', upload.array('images', 20), async (req, res) => 
     fs.writeFileSync(voiceoverPath, voiceBuffer)
     console.log('✅ Voiceover saved:', voiceoverPath)
     
-    // Step 2: Calculate total duration
-    const estimatedDuration = imageDurations ? imageDurations.reduce((a, b) => a + b, 0) : Math.max(10, Math.ceil(cleanedScript.length / 15))
+    // Step 2: Get ACTUAL voiceover duration from the audio file
+    const getAudioDuration = async (audioPath) => {
+      return new Promise((resolve, reject) => {
+        exec(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`, (error, stdout) => {
+          if (error) {
+            console.log('⚠️ Could not get audio duration, using estimate')
+            resolve(Math.ceil(cleanedScript.length / 15))
+          } else {
+            resolve(parseFloat(stdout.trim()))
+          }
+        })
+      })
+    }
     
-    console.log(`\n⏱️ Video duration: ${estimatedDuration.toFixed(1)}s (timed to match voiceover)`)
+    const actualVoiceoverDuration = await getAudioDuration(voiceoverPath)
+    console.log(`\n⏱️ ACTUAL voiceover duration: ${actualVoiceoverDuration.toFixed(1)}s`)
+    
+    // Recalculate image durations to match ACTUAL voiceover
+    const durationPerImage = actualVoiceoverDuration / req.files.length
+    const adjustedDurations = req.files.map(() => durationPerImage)
+    const imageDurations = adjustedDurations
+    
+    console.log(`📊 Video will be ${actualVoiceoverDuration.toFixed(1)}s (matches actual voiceover)`)
+    console.log(`📊 Each image: ${durationPerImage.toFixed(1)}s`)
     
     // Step 3: Create video from images (create clips first, then concat)
     console.log('\n🎨 Step 2: Creating video from images...')
