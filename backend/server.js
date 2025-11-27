@@ -469,54 +469,45 @@ app.post('/api/generate-video', upload.array('images', 20), async (req, res) => 
       height = 1080 // Square
     }
     
-    console.log(`Creating ${req.files.length} video clips (${durationPerImage.toFixed(1)}s each)...`)
+    console.log(`Creating slideshow video from ${req.files.length} images...`)
     
-    // Step 3a: Convert each image to a video clip
-    const videoClips = []
+    // WORKING SOLUTION: Convert JPEGs to PNG first (handles corrupted JPEGs)
+    const tempImageDir = path.join(outputDir, `imgs-${timestamp}`)
+    if (!fs.existsSync(tempImageDir)) {
+      fs.mkdirSync(tempImageDir, { recursive: true })
+    }
+    
+    console.log('Converting images to clean format...')
     for (let i = 0; i < req.files.length; i++) {
-      const clipPath = path.join(outputDir, `clip-${timestamp}-${i}.mp4`)
-      const imagePath = req.files[i].path
-      
-      // Create a video clip from this image (FFmpeg 8.x compatible)
-      // -loop 1 repeats the image, -t sets duration, -r sets output framerate
-      const createClipCmd = `ffmpeg -loop 1 -i "${imagePath}" -t ${durationPerImage} -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2" -r 30 -c:v libx264 -pix_fmt yuv420p "${clipPath}"`
-      
-      await execPromise(createClipCmd)
-      videoClips.push(clipPath)
-      console.log(`✓ Clip ${i + 1}/${req.files.length} created`)
+      const targetPath = path.join(tempImageDir, `img${String(i).padStart(4, '0')}.png`)
+      // Convert to PNG to handle any JPEG encoding issues
+      const convertCmd = `ffmpeg -i "${req.files[i].path}" -y "${targetPath}"`
+      await execPromise(convertCmd)
+      console.log(`✓ Image ${i + 1}/${req.files.length} converted`)
     }
     
-    console.log('✅ All clips created. Concatenating...')
+    console.log(`✅ ${req.files.length} images ready`)
     
-    // Step 3b: Create concat file listing all video clips
-    const concatFilePath = path.join(outputDir, `concat-${timestamp}.txt`)
-    let concatContent = ''
-    
-    videoClips.forEach(clipPath => {
-      const escapedPath = clipPath.replace(/\\/g, '/')
-      concatContent += `file '${escapedPath}'\n`
-    })
-    
-    fs.writeFileSync(concatFilePath, concatContent)
-    
-    // Step 3c: Concatenate all clips into final video
+    // Create video directly from PNG sequence
     const videoNoAudioPath = path.join(outputDir, `video-no-audio-${timestamp}.mp4`)
-    const concatCmd = `ffmpeg -f concat -safe 0 -i "${concatFilePath}" -c copy "${videoNoAudioPath}"`
     
-    await execPromise(concatCmd)
-    console.log('✅ Video concatenated')
+    // Use pattern with duration per image
+    const inputPattern = path.join(tempImageDir, 'img%04d.png').replace(/\\/g, '/')
+    const fps = 1 / durationPerImage
+    const createVideoCmd = `ffmpeg -framerate ${fps} -i "${inputPattern}" -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2" -c:v libx264 -r 30 -pix_fmt yuv420p "${videoNoAudioPath}"`
     
-    // Clean up clip files and concat file
-    videoClips.forEach(clipPath => {
-      if (fs.existsSync(clipPath)) {
-        fs.unlinkSync(clipPath)
-      }
-    })
-    if (fs.existsSync(concatFilePath)) {
-      fs.unlinkSync(concatFilePath)
-    }
-    
+    console.log('Creating video from image sequence...')
+    await execPromise(createVideoCmd)
     console.log('✅ Video created (no audio)')
+    
+    // Clean up temp images
+    console.log('Cleaning up temp files...')
+    const tempImages = fs.readdirSync(tempImageDir)
+    tempImages.forEach(img => {
+      fs.unlinkSync(path.join(tempImageDir, img))
+    })
+    fs.rmdirSync(tempImageDir)
+    console.log('✅ Temp files cleaned')
     
     // Step 4: Add voiceover + background music to video
     console.log('\n🔊 Step 3: Adding audio (voiceover + music) to video...')
