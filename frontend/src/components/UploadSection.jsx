@@ -180,6 +180,7 @@ export default function UploadSection({ uploadedFiles, setUploadedFiles }) {
       formData.append('musicVolume', musicVolume)
       formData.append('niche', niche)
       formData.append('aspectRatio', aspectRatio)
+      formData.append('imageAnalysis', JSON.stringify(imageAnalysis))
       
       const response = await axios.post('/api/generate-video', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },

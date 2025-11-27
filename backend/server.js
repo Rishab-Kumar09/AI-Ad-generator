@@ -335,7 +335,7 @@ function extractFeatures(text) {
   return found.slice(0, 5) // Return top 5
 }
 
-// Helper function to clean script (remove stage directions)
+// Helper function to clean script (remove ALL stage directions)
 function cleanScript(script) {
   let cleaned = script
   
@@ -345,12 +345,26 @@ function cleanScript(script) {
   // Remove markdown bold markers
   cleaned = cleaned.replace(/\*\*/g, '')
   
+  // Remove "Voiceover:" at start of lines
+  cleaned = cleaned.replace(/^Voiceover:\s*/gim, '')
+  cleaned = cleaned.replace(/\n\s*Voiceover:\s*/gi, '\n')
+  
+  // Remove scene markers
+  cleaned = cleaned.replace(/Scene \d+:/gi, '')
+  cleaned = cleaned.replace(/\[Scene.*?\]/gi, '')
+  
+  // Remove any other common stage directions
+  cleaned = cleaned.replace(/\(.*?\)/g, '') // Remove (parenthetical directions)
+  cleaned = cleaned.replace(/--.*?--/g, '') // Remove --dash directions--
+  
   // Remove extra whitespace and newlines
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n')
+  cleaned = cleaned.replace(/^\s+|\s+$/gm, '') // Trim each line
   cleaned = cleaned.trim()
   
   console.log('Original script length:', script.length)
   console.log('Cleaned script length:', cleaned.length)
+  console.log('Preview:', cleaned.substring(0, 100) + '...')
   
   return cleaned
 }
@@ -413,10 +427,77 @@ app.post('/api/generate-voiceover', async (req, res) => {
   }
 })
 
+// Helper function to intelligently order images based on script content
+function orderImagesByScript(files, script, imageAnalysis) {
+  console.log('\n📋 Ordering images to match script flow...')
+  
+  // Parse imageAnalysis JSON if it's a string
+  let analysis = {}
+  try {
+    analysis = typeof imageAnalysis === 'string' ? JSON.parse(imageAnalysis) : imageAnalysis
+  } catch (e) {
+    console.log('⚠️ No image analysis provided, using upload order')
+    return files
+  }
+  
+  const scriptLower = script.toLowerCase()
+  
+  // Create image-category mapping
+  const imageMap = files.map((file, index) => {
+    const fileName = file.originalname
+    const imageData = analysis[fileName] || {}
+    const category = imageData.category || 'unknown'
+    
+    // Find where this category is mentioned in the script
+    let scriptPosition = scriptLower.indexOf(category.replace('-', ' '))
+    
+    // If not found by category, try common keywords
+    if (scriptPosition === -1) {
+      const keywords = {
+        'exterior': ['exterior', 'outside', 'front', 'entrance', 'pool', 'backyard', 'outdoor'],
+        'living-room': ['living room', 'living area', 'family room'],
+        'kitchen': ['kitchen', 'cook', 'appliances', 'granite', 'countertop'],
+        'bedroom': ['bedroom', 'sleep', 'rest', 'sanctuary', 'retreat'],
+        'bathroom': ['bathroom', 'bath', 'shower', 'vanity']
+      }
+      
+      for (const [cat, words] of Object.entries(keywords)) {
+        if (category.includes(cat) || cat.includes(category)) {
+          for (const word of words) {
+            const pos = scriptLower.indexOf(word)
+            if (pos !== -1) {
+              scriptPosition = pos
+              break
+            }
+          }
+        }
+        if (scriptPosition !== -1) break
+      }
+    }
+    
+    return {
+      file,
+      category,
+      scriptPosition: scriptPosition === -1 ? 999999 : scriptPosition,
+      originalIndex: index
+    }
+  })
+  
+  // Sort by script position (when mentioned in script)
+  imageMap.sort((a, b) => a.scriptPosition - b.scriptPosition)
+  
+  console.log('Image order:')
+  imageMap.forEach((item, i) => {
+    console.log(`  ${i + 1}. ${item.category} (mentioned at position ${item.scriptPosition === 999999 ? 'end' : item.scriptPosition})`)
+  })
+  
+  return imageMap.map(item => item.file)
+}
+
 // Generate complete video ad
 app.post('/api/generate-video', upload.array('images', 20), async (req, res) => {
   try {
-    const { script, voice, music, musicVolume, niche, aspectRatio } = req.body
+    const { script, voice, music, musicVolume, niche, aspectRatio, imageAnalysis } = req.body
     
     console.log('\n🎬 === GENERATING VIDEO AD ===')
     console.log('Images:', req.files.length)
@@ -425,6 +506,9 @@ app.post('/api/generate-video', upload.array('images', 20), async (req, res) => 
     console.log('Music Volume:', musicVolume || 15, '%')
     console.log('Niche:', niche)
     console.log('Aspect Ratio:', aspectRatio || '16:9')
+    
+    // Order images to match script flow
+    req.files = orderImagesByScript(req.files, script, imageAnalysis)
     
     const outputDir = path.join(__dirname, 'output')
     if (!fs.existsSync(outputDir)) {
