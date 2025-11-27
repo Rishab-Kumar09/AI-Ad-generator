@@ -532,6 +532,125 @@ function segmentScriptAndMatchImages(files, script, imageAnalysis) {
   return { orderedFiles, durations: timings }
 }
 
+// Validation function to verify image-voiceover timing sync
+function validateTimingSync(files, script, imageAnalysis, durations) {
+  console.log('\n🔍 === TIMING VALIDATION REPORT ===')
+  
+  // Parse imageAnalysis
+  let analysis = {}
+  try {
+    analysis = typeof imageAnalysis === 'string' ? JSON.parse(imageAnalysis) : imageAnalysis
+  } catch (e) {
+    console.log('⚠️ Cannot validate - no image analysis')
+    return
+  }
+  
+  const cleanedScript = cleanScript(script)
+  const scriptLower = cleanedScript.toLowerCase()
+  
+  // Speech rate: ~15 characters per second
+  const CHARS_PER_SECOND = 15
+  
+  // Category keywords
+  const categoryKeywords = {
+    'exterior': ['exterior', 'outside', 'front', 'entrance', 'pool', 'backyard', 'outdoor', 'property'],
+    'living-room': ['living room', 'living area', 'family room', 'lounge'],
+    'kitchen': ['kitchen', 'cook', 'appliances', 'granite', 'countertop', 'dining'],
+    'bedroom': ['bedroom', 'sleep', 'rest', 'sanctuary', 'retreat', 'master bedroom'],
+    'bathroom': ['bathroom', 'bath', 'shower', 'vanity', 'tub']
+  }
+  
+  console.log('\n📊 Timeline (what words are spoken when):')
+  console.log('═'.repeat(80))
+  
+  // Build timeline
+  let cumTime = 0
+  const timeline = []
+  
+  files.forEach((file, index) => {
+    const fileName = file.originalname
+    const imageData = analysis[fileName] || {}
+    const category = imageData.category || 'unknown'
+    const duration = durations[index]
+    const startTime = cumTime
+    const endTime = cumTime + duration
+    
+    // Find when this category is mentioned in voiceover
+    const keywords = categoryKeywords[category] || [category.replace('-', ' ')]
+    let mentionedAt = []
+    
+    keywords.forEach(keyword => {
+      let pos = 0
+      while ((pos = scriptLower.indexOf(keyword, pos)) !== -1) {
+        const timeInVoiceover = pos / CHARS_PER_SECOND
+        mentionedAt.push({ keyword, time: timeInVoiceover, position: pos })
+        pos += keyword.length
+      }
+    })
+    
+    timeline.push({
+      index: index + 1,
+      fileName,
+      category,
+      startTime,
+      endTime,
+      duration,
+      mentionedAt
+    })
+    
+    cumTime += duration
+  })
+  
+  // Display timeline
+  timeline.forEach(item => {
+    const timeRange = `${item.startTime.toFixed(1)}s - ${item.endTime.toFixed(1)}s`
+    console.log(`\n${item.index}. ${item.category.toUpperCase()} | ${timeRange} (${item.duration.toFixed(1)}s)`)
+    console.log(`   Image: ${item.fileName.substring(0, 50)}`)
+    
+    if (item.mentionedAt.length > 0) {
+      console.log(`   ✅ Category mentioned in voiceover at:`)
+      item.mentionedAt.forEach(mention => {
+        const inSync = mention.time >= item.startTime && mention.time <= item.endTime
+        const syncIcon = inSync ? '✅' : '⚠️'
+        console.log(`      ${syncIcon} "${mention.keyword}" at ${mention.time.toFixed(1)}s ${inSync ? '(IN SYNC!)' : '(OUT OF SYNC!!)'}`)
+      })
+    } else {
+      console.log(`   ⚠️ Category "${item.category}" NOT mentioned in voiceover`)
+    }
+  })
+  
+  // Sync accuracy report
+  console.log('\n' + '═'.repeat(80))
+  console.log('📈 SYNC ACCURACY:')
+  
+  let inSyncCount = 0
+  let totalWithMentions = 0
+  
+  timeline.forEach(item => {
+    if (item.mentionedAt.length > 0) {
+      totalWithMentions++
+      const hasSync = item.mentionedAt.some(m => m.time >= item.startTime && m.time <= item.endTime)
+      if (hasSync) inSyncCount++
+    }
+  })
+  
+  const accuracy = totalWithMentions > 0 ? (inSyncCount / totalWithMentions * 100) : 0
+  console.log(`   Images in sync: ${inSyncCount}/${totalWithMentions} (${accuracy.toFixed(1)}%)`)
+  
+  if (accuracy >= 90) {
+    console.log('   🎉 EXCELLENT SYNC! Images match voiceover perfectly!')
+  } else if (accuracy >= 70) {
+    console.log('   ✅ GOOD SYNC! Most images match voiceover.')
+  } else if (accuracy >= 50) {
+    console.log('   ⚠️ MODERATE SYNC. Some images may not match voiceover.')
+  } else {
+    console.log('   ❌ POOR SYNC. Images do not match voiceover well.')
+  }
+  
+  console.log('═'.repeat(80))
+  console.log('')
+}
+
 // Generate complete video ad
 app.post('/api/generate-video', upload.array('images', 20), async (req, res) => {
   try {
@@ -549,6 +668,9 @@ app.post('/api/generate-video', upload.array('images', 20), async (req, res) => 
     const { orderedFiles, durations } = segmentScriptAndMatchImages(req.files, script, imageAnalysis)
     req.files = orderedFiles
     const imageDurations = durations
+    
+    // Validate timing sync and show detailed report
+    validateTimingSync(req.files, script, imageAnalysis, imageDurations)
     
     const outputDir = path.join(__dirname, 'output')
     if (!fs.existsSync(outputDir)) {
