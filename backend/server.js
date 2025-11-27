@@ -427,9 +427,9 @@ app.post('/api/generate-voiceover', async (req, res) => {
   }
 })
 
-// Helper function to intelligently order images based on script content
-function orderImagesByScript(files, script, imageAnalysis) {
-  console.log('\n📋 Ordering images to match script flow...')
+// Helper function to segment script and match images with timing
+function segmentScriptAndMatchImages(files, script, imageAnalysis) {
+  console.log('\n📋 Segmenting script and matching images by timing...')
   
   // Parse imageAnalysis JSON if it's a string
   let analysis = {}
@@ -437,61 +437,99 @@ function orderImagesByScript(files, script, imageAnalysis) {
     analysis = typeof imageAnalysis === 'string' ? JSON.parse(imageAnalysis) : imageAnalysis
   } catch (e) {
     console.log('⚠️ No image analysis provided, using upload order')
-    return files
+    return { orderedFiles: files, durations: null }
   }
   
   const scriptLower = script.toLowerCase()
+  const totalChars = script.length
   
-  // Create image-category mapping
-  const imageMap = files.map((file, index) => {
+  // Category keywords for matching
+  const categoryKeywords = {
+    'exterior': ['exterior', 'outside', 'front', 'entrance', 'pool', 'backyard', 'outdoor', 'property', 'home exterior'],
+    'living-room': ['living room', 'living area', 'family room', 'lounge'],
+    'kitchen': ['kitchen', 'cook', 'appliances', 'granite', 'countertop', 'dining'],
+    'bedroom': ['bedroom', 'sleep', 'rest', 'sanctuary', 'retreat', 'master bedroom'],
+    'bathroom': ['bathroom', 'bath', 'shower', 'vanity', 'tub']
+  }
+  
+  // Group images by category
+  const imagesByCategory = {}
+  files.forEach(file => {
     const fileName = file.originalname
     const imageData = analysis[fileName] || {}
     const category = imageData.category || 'unknown'
     
-    // Find where this category is mentioned in the script
-    let scriptPosition = scriptLower.indexOf(category.replace('-', ' '))
+    if (!imagesByCategory[category]) {
+      imagesByCategory[category] = []
+    }
+    imagesByCategory[category].push(file)
+  })
+  
+  // Find script segments for each category
+  const segments = []
+  
+  for (const [category, images] of Object.entries(imagesByCategory)) {
+    let earliestPosition = 999999
+    let latestPosition = -1
     
-    // If not found by category, try common keywords
-    if (scriptPosition === -1) {
-      const keywords = {
-        'exterior': ['exterior', 'outside', 'front', 'entrance', 'pool', 'backyard', 'outdoor'],
-        'living-room': ['living room', 'living area', 'family room'],
-        'kitchen': ['kitchen', 'cook', 'appliances', 'granite', 'countertop'],
-        'bedroom': ['bedroom', 'sleep', 'rest', 'sanctuary', 'retreat'],
-        'bathroom': ['bathroom', 'bath', 'shower', 'vanity']
-      }
-      
-      for (const [cat, words] of Object.entries(keywords)) {
-        if (category.includes(cat) || cat.includes(category)) {
-          for (const word of words) {
-            const pos = scriptLower.indexOf(word)
-            if (pos !== -1) {
-              scriptPosition = pos
-              break
-            }
-          }
-        }
-        if (scriptPosition !== -1) break
+    // Find all mentions of this category in script
+    const keywords = categoryKeywords[category] || [category.replace('-', ' ')]
+    
+    for (const keyword of keywords) {
+      let pos = 0
+      while ((pos = scriptLower.indexOf(keyword, pos)) !== -1) {
+        earliestPosition = Math.min(earliestPosition, pos)
+        latestPosition = Math.max(latestPosition, pos + keyword.length)
+        pos += keyword.length
       }
     }
     
-    return {
-      file,
+    if (earliestPosition === 999999) {
+      earliestPosition = totalChars // Put at end if not found
+      latestPosition = totalChars
+    }
+    
+    segments.push({
       category,
-      scriptPosition: scriptPosition === -1 ? 999999 : scriptPosition,
-      originalIndex: index
-    }
+      images,
+      startPos: earliestPosition,
+      endPos: latestPosition,
+      charLength: latestPosition - earliestPosition
+    })
+  }
+  
+  // Sort segments by start position
+  segments.sort((a, b) => a.startPos - b.startPos)
+  
+  console.log('\nScript segments:')
+  segments.forEach((seg, i) => {
+    console.log(`  ${i + 1}. ${seg.category}: chars ${seg.startPos}-${seg.endPos} (${seg.images.length} images)`)
   })
   
-  // Sort by script position (when mentioned in script)
-  imageMap.sort((a, b) => a.scriptPosition - b.scriptPosition)
+  // Calculate timing for each segment (15 chars/second speech rate)
+  const totalDuration = Math.ceil(totalChars / 15)
+  const timings = []
   
-  console.log('Image order:')
-  imageMap.forEach((item, i) => {
-    console.log(`  ${i + 1}. ${item.category} (mentioned at position ${item.scriptPosition === 999999 ? 'end' : item.scriptPosition})`)
+  segments.forEach(seg => {
+    const segmentDuration = Math.max(3, Math.ceil(seg.charLength / 15)) // Min 3 seconds per segment
+    const durationPerImage = segmentDuration / seg.images.length
+    
+    seg.images.forEach(img => {
+      timings.push(durationPerImage)
+    })
   })
   
-  return imageMap.map(item => item.file)
+  // Flatten ordered images
+  const orderedFiles = segments.flatMap(seg => seg.images)
+  
+  console.log('\nTimed image display:')
+  let cumTime = 0
+  orderedFiles.forEach((file, i) => {
+    console.log(`  ${i + 1}. ${file.originalname.substring(0, 40)} - ${timings[i].toFixed(1)}s (at ${cumTime.toFixed(1)}s)`)
+    cumTime += timings[i]
+  })
+  
+  return { orderedFiles, durations: timings }
 }
 
 // Generate complete video ad
@@ -507,8 +545,10 @@ app.post('/api/generate-video', upload.array('images', 20), async (req, res) => 
     console.log('Niche:', niche)
     console.log('Aspect Ratio:', aspectRatio || '16:9')
     
-    // Order images to match script flow
-    req.files = orderImagesByScript(req.files, script, imageAnalysis)
+    // Segment script and match images with proper timing
+    const { orderedFiles, durations } = segmentScriptAndMatchImages(req.files, script, imageAnalysis)
+    req.files = orderedFiles
+    const imageDurations = durations
     
     const outputDir = path.join(__dirname, 'output')
     if (!fs.existsSync(outputDir)) {
@@ -534,11 +574,10 @@ app.post('/api/generate-video', upload.array('images', 20), async (req, res) => 
     fs.writeFileSync(voiceoverPath, voiceBuffer)
     console.log('✅ Voiceover saved:', voiceoverPath)
     
-    // Step 2: Calculate duration from cleaned script
-    const estimatedDuration = Math.max(10, Math.ceil(cleanedScript.length / 15))
-    const durationPerImage = estimatedDuration / req.files.length
+    // Step 2: Calculate total duration
+    const estimatedDuration = imageDurations ? imageDurations.reduce((a, b) => a + b, 0) : Math.max(10, Math.ceil(cleanedScript.length / 15))
     
-    console.log(`\n⏱️ Video duration: ${estimatedDuration}s (~${durationPerImage.toFixed(1)}s per image)`)
+    console.log(`\n⏱️ Video duration: ${estimatedDuration.toFixed(1)}s (timed to match voiceover)`)
     
     // Step 3: Create video from images (create clips first, then concat)
     console.log('\n🎨 Step 2: Creating video from images...')
@@ -572,25 +611,53 @@ app.post('/api/generate-video', upload.array('images', 20), async (req, res) => 
     
     console.log(`✅ ${req.files.length} images ready`)
     
-    // Create video directly from PNG sequence
+    // Create individual video clips with custom durations for each image
     const videoNoAudioPath = path.join(outputDir, `video-no-audio-${timestamp}.mp4`)
+    const clipDir = path.join(outputDir, `clips-${timestamp}`)
+    if (!fs.existsSync(clipDir)) {
+      fs.mkdirSync(clipDir, { recursive: true })
+    }
     
-    // Use pattern with duration per image
-    const inputPattern = path.join(tempImageDir, 'img%04d.png').replace(/\\/g, '/')
-    const fps = 1 / durationPerImage
-    const createVideoCmd = `ffmpeg -framerate ${fps} -i "${inputPattern}" -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2" -c:v libx264 -r 30 -pix_fmt yuv420p "${videoNoAudioPath}"`
+    console.log('Creating video clips with timed durations...')
+    for (let i = 0; i < req.files.length; i++) {
+      const imgPath = path.join(tempImageDir, `img${String(i).padStart(4, '0')}.png`)
+      const clipPath = path.join(clipDir, `clip${String(i).padStart(4, '0')}.mp4`)
+      const duration = imageDurations ? imageDurations[i] : (estimatedDuration / req.files.length)
+      
+      // Create clip with specific duration using universal FFmpeg syntax
+      const createClipCmd = `ffmpeg -r 1 -i "${imgPath}" -t ${duration} -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,fps=30" -c:v libx264 -pix_fmt yuv420p -y "${clipPath}"`
+      await execPromise(createClipCmd)
+      console.log(`✓ Clip ${i + 1}/${req.files.length} created (${duration.toFixed(1)}s)`)
+    }
     
-    console.log('Creating video from image sequence...')
+    // Create concat file
+    const concatListPath = path.join(outputDir, `concat-${timestamp}.txt`)
+    const concatContent = req.files.map((_, i) => {
+      const clipPath = path.join(clipDir, `clip${String(i).padStart(4, '0')}.mp4`).replace(/\\/g, '/')
+      return `file '${clipPath}'`
+    }).join('\n')
+    fs.writeFileSync(concatListPath, concatContent)
+    
+    // Concatenate all clips with their specific durations
+    console.log('Concatenating clips...')
+    const createVideoCmd = `ffmpeg -f concat -safe 0 -i "${concatListPath}" -c copy -y "${videoNoAudioPath}"`
     await execPromise(createVideoCmd)
-    console.log('✅ Video created (no audio)')
+    console.log('✅ Video created with timed images (no audio)')
     
-    // Clean up temp images
+    // Clean up temp images and clips
     console.log('Cleaning up temp files...')
     const tempImages = fs.readdirSync(tempImageDir)
     tempImages.forEach(img => {
       fs.unlinkSync(path.join(tempImageDir, img))
     })
     fs.rmdirSync(tempImageDir)
+    
+    const tempClips = fs.readdirSync(clipDir)
+    tempClips.forEach(clip => {
+      fs.unlinkSync(path.join(clipDir, clip))
+    })
+    fs.rmdirSync(clipDir)
+    fs.unlinkSync(concatListPath)
     console.log('✅ Temp files cleaned')
     
     // Step 4: Add voiceover + background music to video
