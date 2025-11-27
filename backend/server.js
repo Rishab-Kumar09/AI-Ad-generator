@@ -275,33 +275,62 @@ app.post('/api/generate-script', async (req, res) => {
       })
       .join('\n\n')
     
-    // Create prompt for script generation
+    // Create prompt for script generation with STRICT voiceover-only output
     const prompt = `You are a professional ad copywriter. Based on the following image analysis of a ${niche} property/product, create a compelling 30-45 second video ad script.
 
 Image Analysis:
 ${analysisText}
 
-Requirements:
+CRITICAL REQUIREMENTS:
+- Write ONLY the voiceover text that will be spoken
+- NO stage directions like [Scene 1], [Zoom in], [Music swells]
+- NO labels like "Voiceover:", "Narrator:", "Script:"
+- NO formatting like **bold**, *italic*, or markdown
+- NO parenthetical directions like (excited tone), (pause)
+- NO scene descriptions - ONLY spoken words
 - Start with an attention-grabbing hook
-- Highlight key features and benefits from the analysis
+- Highlight key features naturally in the flow
 - Include emotional appeal
 - End with a strong call-to-action
-- Keep it concise and punchy (suitable for voiceover)
 - Write in a conversational, engaging tone
+- 30-45 seconds of pure spoken dialogue
 
-Generate the script now:`
+OUTPUT FORMAT: Just the raw voiceover text that will be read aloud, nothing else.
+
+Example of CORRECT output:
+"Imagine waking up every morning in your dream home. This stunning property features a sparkling pool, modern kitchen with granite countertops, and spacious bedrooms that offer the perfect retreat. Experience luxury living at its finest. Schedule your tour today."
+
+Example of WRONG output (DO NOT DO THIS):
+[Scene 1: Exterior]
+**Voiceover:** Imagine waking up every morning...
+[Camera zooms to pool]
+
+Generate ONLY the voiceover text now:`
     
     const response = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: 'You are an expert ad copywriter specializing in video scripts.' },
+        { 
+          role: 'system', 
+          content: 'You are an expert ad copywriter. You ONLY write the exact voiceover text that will be spoken - no formatting, no stage directions, no labels, just pure dialogue. Your scripts are ready to be sent directly to text-to-speech without any editing.' 
+        },
         { role: 'user', content: prompt }
       ],
-      temperature: 0.8,
+      temperature: 0.7, // Lower for more consistent formatting
       max_tokens: 500
     })
     
-    const script = response.choices[0].message.content.trim()
+    let script = response.choices[0].message.content.trim()
+    
+    // Safety check: Remove any formatting that might have slipped through
+    script = script.replace(/\[.*?\]/g, '') // Remove [brackets]
+    script = script.replace(/\*\*/g, '') // Remove **bold**
+    script = script.replace(/^(Voiceover|Narrator|Script):\s*/gim, '') // Remove labels
+    script = script.replace(/\(.*?\)/g, '') // Remove (parentheticals)
+    script = script.replace(/\n{3,}/g, '\n\n') // Clean up spacing
+    script = script.trim()
+    
+    console.log('✅ Generated clean voiceover script:', script.substring(0, 100) + '...')
     
     res.json({ script })
     
