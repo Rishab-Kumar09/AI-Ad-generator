@@ -705,19 +705,8 @@ app.post('/api/generate-video', upload.array('images', 20), async (req, res) => 
     // Segment script and match images with proper timing
     const { orderedFiles, durations, totalDuration } = segmentScriptAndMatchImages(req.files, script, imageAnalysis)
     req.files = orderedFiles
-    const imageDurations = durations
+    let imageDurations = durations // Use 'let' so we can reassign later
     const voiceoverDuration = totalDuration || Math.ceil(cleanScript(script).length / 15)
-    
-    // Debug: Check what we're passing to validation
-    console.log('\n🔧 DEBUG: Calling validation with:')
-    console.log('   Files:', req.files.length)
-    console.log('   Script length:', script ? script.length : 0)
-    console.log('   ImageAnalysis type:', typeof imageAnalysis)
-    console.log('   ImageAnalysis present:', imageAnalysis ? 'YES' : 'NO')
-    console.log('   Durations:', imageDurations ? imageDurations.length : 0)
-    
-    // Validate timing sync and show detailed report
-    validateTimingSync(req.files, script, imageAnalysis, imageDurations, actualVoiceoverDuration)
     
     const outputDir = path.join(__dirname, 'output')
     if (!fs.existsSync(outputDir)) {
@@ -762,11 +751,21 @@ app.post('/api/generate-video', upload.array('images', 20), async (req, res) => 
     
     // Recalculate image durations to match ACTUAL voiceover
     const durationPerImage = actualVoiceoverDuration / req.files.length
-    const adjustedDurations = req.files.map(() => durationPerImage)
-    const imageDurations = adjustedDurations
+    imageDurations = req.files.map(() => durationPerImage) // Reassign (not redeclare)
     
     console.log(`📊 Video will be ${actualVoiceoverDuration.toFixed(1)}s (matches actual voiceover)`)
     console.log(`📊 Each image: ${durationPerImage.toFixed(1)}s`)
+    
+    // Debug: Check what we're passing to validation
+    console.log('\n🔧 DEBUG: Calling validation with:')
+    console.log('   Files:', req.files.length)
+    console.log('   Script length:', script ? script.length : 0)
+    console.log('   ImageAnalysis type:', typeof imageAnalysis)
+    console.log('   ImageAnalysis present:', imageAnalysis ? 'YES' : 'NO')
+    console.log('   Durations:', imageDurations ? imageDurations.length : 0)
+    
+    // Validate timing sync and show detailed report (after we have actual durations)
+    validateTimingSync(req.files, script, imageAnalysis, imageDurations, actualVoiceoverDuration)
     
     // Step 3: Create video from images (create clips first, then concat)
     console.log('\n🎨 Step 2: Creating video from images...')
