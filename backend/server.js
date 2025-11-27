@@ -440,8 +440,12 @@ function segmentScriptAndMatchImages(files, script, imageAnalysis) {
     return { orderedFiles: files, durations: null }
   }
   
-  const scriptLower = script.toLowerCase()
-  const totalChars = script.length
+  // CRITICAL: Use CLEANED script for accurate timing
+  const cleanedScript = cleanScript(script)
+  const scriptLower = cleanedScript.toLowerCase()
+  const totalChars = cleanedScript.length
+  
+  console.log('Using cleaned script for timing:', totalChars, 'chars')
   
   // Category keywords for matching
   const categoryKeywords = {
